@@ -1,4 +1,4 @@
-# app.py (Your main script)
+# app.py (Main Streamlit script - Updated)
 import streamlit as st
 import pandas as pd
 import folium
@@ -8,13 +8,13 @@ import streamlit.components.v1 as components
 
 # Import modular components
 import bods_api
-from utils import haversine, process_activities_to_data
+from utils import haversine, process_activities_to_data, get_bus_details_by_ref
 from bods_api import TELFORD_BOUNDING_BOX # Access the Bounding Box for map centering
 
 
 # --- 1. Data Fetching & Caching ---
 
-@st.cache_data(ttl=30) # Cache for 30 seconds
+@st.cache_data(ttl=30)
 def get_initial_data():
     """Fetches and processes data, optimized with Streamlit caching."""
     try:
@@ -28,8 +28,92 @@ def get_initial_data():
 
 # --- 2. UI Components ---
 
+def render_route_map(selected_bus_data, user_loc):
+    """Generates a detailed map showing the selected bus and its route prediction."""
+    
+    bus_lat, bus_lon = selected_bus_data['Lat'], selected_bus_data['Lon']
+    
+    # Use the bus's current location as the map center
+    map_center = [bus_lat, bus_lon]
+
+    route_map = folium.Map(location=map_center, zoom_start=14)
+
+    # --- Next Stop & Prediction (Visualization) ---
+    next_stop_name = selected_bus_data['Next Stop']
+    
+    # Since we don't have the precise coordinate for the next stop, 
+    # we'll use a mock location near the destination for visualization.
+    # In a production app, you would use a robust Geo-API here.
+    if next_stop_name != 'N/A':
+        # Mock Next Stop Location (slightly shifted from the bus towards the direction of travel)
+        # This is for visualization only.
+        next_stop_lat = bus_lat + 0.005 
+        next_stop_lon = bus_lon + 0.005 
+
+        # Add the predicted next stop marker
+        folium.Marker(
+            location=[next_stop_lat, next_stop_lon],
+            popup=f"**Next Stop:** {next_stop_name}",
+            icon=folium.Icon(color='orange', icon='location-dot', prefix='fa')
+        ).add_to(route_map)
+
+        # Draw a line segment (a straight line prediction)
+        folium.PolyLine(
+            locations=[[bus_lat, bus_lon], [next_stop_lat, next_stop_lon]],
+            color='purple',
+            weight=5,
+            opacity=0.7,
+            dash_array='10, 5',
+            popup=f"Segment to: {next_stop_name}"
+        ).add_to(route_map)
+
+    # --- Bus Location Marker ---
+    line_number = selected_bus_data['Line'] if selected_bus_data['Line'] != 'N/A' else ''
+    html = f'''
+        <div style="position: relative; text-align: center; width: 40px; height: 40px;">
+            <i class="fa fa-bus" style="font-size: 28px; color: red;"></i>
+            <span style="position: absolute; top: 28px; left: 50%; transform: translateX(-50%); font-size: 12px; color: black; background-color: yellow; padding: 2px; border-radius: 3px;">{line_number}</span>
+        </div>
+    '''
+    custom_icon = folium.DivIcon(html=html)
+    
+    folium.Marker(
+        location=[bus_lat, bus_lon],
+        popup=f"**{selected_bus_data['Vehicle Ref']}**<br>Line: {selected_bus_data['Line']}",
+        icon=custom_icon
+    ).add_to(route_map)
+
+    # --- User Location Marker ---
+    if user_loc:
+        folium.Marker(
+            location=user_loc,
+            popup="Your Location",
+            icon=folium.Icon(color="green", icon="user", prefix="fa")
+        ).add_to(route_map)
+
+    st.subheader(f"Detailed Route Visualization for Bus {selected_bus_data['Line']} ({selected_bus_data['Vehicle Ref']})")
+    folium_static(route_map, width=800, height=500)
+
+    # --- Predictions/Details Table ---
+    st.markdown("### Estimated Timetable")
+    pred_data = {
+        "Key": ["Current Speed", "Bearing", "Next Stop", "Expected ETA", "Final Destination"],
+        "Value": [
+            f"{selected_bus_data['Speed (km/h)']} km/h",
+            selected_bus_data['Bearing'],
+            selected_bus_data['Next Stop'],
+            selected_bus_data['ETA'],
+            selected_bus_data['To']
+        ]
+    }
+    st.table(pd.DataFrame(pred_data))
+
+
+# --- (Previous render_map and render_sidebar functions remain unchanged) ---
 def render_map(filtered_activities, filtered_bus_data, user_loc):
-    """Generates and renders the Folium map with bus and user markers."""
+    """Generates and renders the Folium map."""
+    
+    # ... (existing map rendering logic) ...
     
     # Determine map center
     map_center = [
@@ -43,6 +127,7 @@ def render_map(filtered_activities, filtered_bus_data, user_loc):
     marker_cluster = MarkerCluster().add_to(bus_map)
 
     for data in filtered_bus_data:
+        # ... (existing marker creation logic) ...
         latitude = data['Lat']
         longitude = data['Lon']
         
@@ -152,6 +237,8 @@ def main():
     # Collect unique filters
     lines = sorted(set([item['Line'] for item in bus_data if item['Line'] != 'N/A']))
     operators = sorted(set([item['Operator'] for item in bus_data if item['Operator'] != 'N/A']))
+    vehicle_refs = sorted(set([item['Vehicle Ref'] for item in bus_data if item['Vehicle Ref'] != 'N/A']))
+
 
     # 3.2 Render Sidebar and Get Inputs
     selected_lines, selected_operators = render_sidebar(lines, operators)
@@ -174,8 +261,29 @@ def main():
             data['Distance (km)'] = round(haversine(user_lat, user_lon, data['Lat'], data['Lon']), 2)
         
         filtered_bus_data.sort(key=lambda x: x['Distance (km)'])
-
-    # 3.5 Render Map and Table
+        
+    # Re-collect vehicle references from filtered data for the new select box
+    filtered_vehicle_refs = sorted(set([item['Vehicle Ref'] for item in filtered_bus_data if item['Vehicle Ref'] != 'N/A']))
+    
+    st.markdown("---")
+    
+    # --- New Feature: Bus Selection & Detailed View ---
+    if filtered_bus_data:
+        st.header("🔍 Individual Bus Tracker")
+        selected_ref = st.selectbox(
+            "Select a bus to track its route and predictions:", 
+            options=[''] + filtered_vehicle_refs,
+            format_func=lambda x: f"Vehicle Ref: {x} (Line: {get_bus_details_by_ref(filtered_bus_data, x).get('Line') if x else 'Select One'})"
+        )
+        
+        if selected_ref:
+            selected_bus_data = get_bus_details_by_ref(filtered_bus_data, selected_ref)
+            if selected_bus_data:
+                render_route_map(selected_bus_data, user_loc)
+            
+            st.markdown("---")
+        
+    # 3.5 Render General Map and Table (Only if the bus selection wasn't made or if we need the general view)
     if filtered_activities:
         render_map(filtered_activities, filtered_bus_data, user_loc)
         
