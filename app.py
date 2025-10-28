@@ -8,6 +8,8 @@ import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import folium_static  # New import to display Folium in Streamlit; pip install streamlit-folium
 import pandas as pd  # Add for DataFrame
+from math import radians, sin, cos, sqrt, atan2  # For haversine distance
+import streamlit.components.v1 as components  # For custom JS components
 
 # 1. Load the API key from the .env file
 load_dotenv("env_variables.env")
@@ -26,6 +28,15 @@ telford_bounding_box = BoundingBox(
 
 # 3. Set up the BODS Client
 bods_client = BODSClient(api_key=API_KEY)
+
+# Function to calculate haversine distance
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth radius in km
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
 
 # Function to fetch raw data
 @st.cache_data(ttl=10)  # Cache for 10 seconds to avoid redundant fetches
@@ -55,7 +66,8 @@ def fetch_data():
                 'Next Stop': mvj.monitored_call.stop_point_name if hasattr(mvj, 'monitored_call') else 'N/A',
                 'ETA': mvj.monitored_call.expected_arrival_time if hasattr(mvj, 'monitored_call') else 'N/A',
                 'Lat': mvj.vehicle_location.latitude,
-                'Lon': mvj.vehicle_location.longitude
+                'Lon': mvj.vehicle_location.longitude,
+                'Distance (km)': 'N/A'  # Placeholder, will be updated if user location available
             })
         
         return vehicle_activities, bus_data
@@ -82,40 +94,92 @@ with st.sidebar:
     st.header("Filters")
     selected_lines = st.multiselect("Filter by Line", lines)
     selected_operators = st.multiselect("Filter by Operator", operators)
+    
+    # User location button
+    st.header("Use My Location")
+    if st.button("Get My Location"):
+        # Custom JS to get geolocation and set it in session state
+        components.html("""
+            <script>
+            function getLocation() {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(sendPosition, showError);
+                } else {
+                    alert("Geolocation is not supported by this browser.");
+                }
+            }
+
+            function sendPosition(position) {
+                const lat = position.coords.latitude;
+                const lon = position.coords.longitude;
+                parent.window.postMessage({type: 'streamlit:setComponentValue', value: [lat, lon]}, '*');
+            }
+
+            function showError(error) {
+                alert("Error getting location: " + error.message);
+            }
+
+            getLocation();
+            </script>
+        """, height=0)
+    
+    # Listen for the geolocation message (using session state)
+    if 'user_loc' not in st.session_state:
+        st.session_state.user_loc = None
 
 # Apply filters
-if selected_lines or selected_operators:
-    filtered_activities = []
-    filtered_bus_data = []
-    for activity, data in zip(vehicle_activities, bus_data):
-        if (not selected_lines or data['Line'] in selected_lines) and \
-           (not selected_operators or data['Operator'] in selected_operators):
-            filtered_activities.append(activity)
-            filtered_bus_data.append(data)
-else:
-    filtered_activities = vehicle_activities
-    filtered_bus_data = bus_data
+filtered_activities = []
+filtered_bus_data = []
+for activity, data in zip(vehicle_activities, bus_data):
+    if (not selected_lines or data['Line'] in selected_lines) and \
+       (not selected_operators or data['Operator'] in selected_operators):
+        filtered_activities.append(activity)
+        filtered_bus_data.append(data)
 
 filtered_num_buses = len(filtered_activities)
+
+# Update distances if user location is available
+user_loc = st.session_state.get('user_loc')
+if user_loc:
+    for data in filtered_bus_data:
+        data['Distance (km)'] = round(haversine(user_loc[0], user_loc[1], data['Lat'], data['Lon']), 2)
+    
+    # Sort table by distance
+    filtered_bus_data.sort(key=lambda x: x['Distance (km)'])
 
 # Generate the map with filtered activities
 if filtered_activities:
     map_center = [(telford_bounding_box.min_latitude + telford_bounding_box.max_latitude) / 2,
                   (telford_bounding_box.min_longitude + telford_bounding_box.max_longitude) / 2]
+    if user_loc:
+        map_center = user_loc  # Center on user if available
     bus_map = folium.Map(location=map_center, zoom_start=12)
     
     # Add markers for filtered buses
     marker_cluster = MarkerCluster().add_to(bus_map)
-    for activity in filtered_activities:
+    for activity, data in zip(filtered_activities, filtered_bus_data):
         vehicle_ref = activity.monitored_vehicle_journey.vehicle_ref
         latitude = activity.monitored_vehicle_journey.vehicle_location.latitude
         longitude = activity.monitored_vehicle_journey.vehicle_location.longitude
         popup_text = f"Bus Ref: {vehicle_ref}<br>Lat: {latitude}<br>Lon: {longitude}"
+        if user_loc:
+            popup_text += f"<br>Distance: {data['Distance (km)']} km"
+            color = "red" if data['Distance (km)'] < 1 else "blue"  # Highlight nearest in red
+        else:
+            color = "blue"
         folium.Marker(
             location=[latitude, longitude],
             popup=popup_text,
-            icon=folium.Icon(color="blue", icon="bus", prefix="fa")
+            icon=folium.Icon(color=color, icon="bus", prefix="fa")
         ).add_to(marker_cluster)
+    
+    # Add user location marker if available
+    if user_loc:
+        folium.Marker(
+            location=user_loc,
+            popup="Your Location",
+            icon=folium.Icon(color="green", icon="user", prefix="fa")
+        ).add_to(bus_map)
     
     folium_static(bus_map, width=800, height=600)
     st.success(f"Found {filtered_num_buses} live bus reports in the area (after filters).")
