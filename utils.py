@@ -25,6 +25,7 @@ def process_activities_to_data(vehicle_activities):
         """Helper to safely access nested or optional attributes in BODS objects."""
         current = obj
         for attr in attr_path.split('.'):
+            # Check if the current object exists and has the attribute
             if current is None or not hasattr(current, attr):
                 return default
             current = getattr(current, attr)
@@ -49,12 +50,14 @@ def process_activities_to_data(vehicle_activities):
             'Lon': safe_get(mvj, 'vehicle_location.longitude', 0.0),
             'Distance (km)': 'N/A'
         })
-    def get_bus_details_by_ref(bus_data_list, vehicle_ref):
-        """Retrieves the full data dictionary for a selected Vehicle Ref."""
+    return bus_data
+
+
+# --- NEW/MISSING FUNCTION PLACED HERE ---
+def get_bus_details_by_ref(bus_data_list, vehicle_ref):
+    """Retrieves the full data dictionary for a selected Vehicle Ref."""
     for data in bus_data_list:
-        if data['Vehicle Ref'] == vehicle_ref:
+        if data.get('Vehicle Ref') == vehicle_ref:
             # Return a copy to ensure we don't accidentally modify session state data
             return data.copy() 
     return None
-    return bus_data
-
