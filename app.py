@@ -7,6 +7,7 @@ from bods_client.models import BoundingBox, SIRIVMParams, Siri
 import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import folium_static  # New import to display Folium in Streamlit; pip install streamlit-folium
+import pandas as pd  # Add for DataFrame
 
 # 1. Load the API key from the .env file
 load_dotenv("env_variables.env")
@@ -40,6 +41,23 @@ def fetch_and_generate_map():
         # Extract data
         vehicle_activities = siri.service_delivery.vehicle_monitoring_delivery.vehicle_activities
         
+        # Create bus data list for the table
+        bus_data = []
+        for activity in vehicle_activities:
+            mvj = activity.monitored_vehicle_journey
+            bus_data.append({
+                'Vehicle Ref': mvj.vehicle_ref,
+                'Line': mvj.published_line_name or mvj.line_ref,
+                'Direction': mvj.direction_ref,
+                'Operator': mvj.operator_ref,
+                'Speed (km/h)': mvj.velocity if hasattr(mvj, 'velocity') else 'N/A',
+                'Bearing': mvj.bearing if hasattr(mvj, 'bearing') else 'N/A',
+                'Next Stop': mvj.monitored_call.stop_point_name if hasattr(mvj, 'monitored_call') else 'N/A',
+                'ETA': mvj.monitored_call.expected_arrival_time if hasattr(mvj, 'monitored_call') else 'N/A',
+                'Lat': mvj.vehicle_location.latitude,
+                'Lon': mvj.vehicle_location.longitude
+            })
+        
         # Create the map
         map_center = [(telford_bounding_box.min_latitude + telford_bounding_box.max_latitude) / 2,
                       (telford_bounding_box.min_longitude + telford_bounding_box.max_longitude) / 2]
@@ -58,22 +76,27 @@ def fetch_and_generate_map():
                 icon=folium.Icon(color="blue", icon="bus", prefix="fa")
             ).add_to(marker_cluster)
         
-        return bus_map, len(vehicle_activities)
+        return bus_map, len(vehicle_activities), bus_data
     
     except Exception as e:
         st.error(f"An error occurred while fetching BODS data: {e}")
         st.info("Double check your API key and the bounding box coordinates.")
-        return None, 0
+        return None, 0, []
 
 # Streamlit app layout
 st.title("Real-Time Telford Bus Tracker")
 st.write("Live bus locations in Telford, updating every 10 seconds.")
 
 # Fetch and display the map
-bus_map, num_buses = fetch_and_generate_map()
+bus_map, num_buses, bus_data = fetch_and_generate_map()
 if bus_map:
     folium_static(bus_map, width=800, height=600)
     st.success(f"Found {num_buses} live bus reports in the area.")
+    
+    # Display the filterable data table
+    st.subheader("Bus Details Table")
+    df = pd.DataFrame(bus_data)
+    st.dataframe(df, use_container_width=True)  # Interactive table with sorting
 
 # Auto-refresh every 10 seconds
 time.sleep(10)
