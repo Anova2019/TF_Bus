@@ -10,6 +10,7 @@ from streamlit_folium import folium_static  # New import to display Folium in St
 import pandas as pd  # Add for DataFrame
 from math import radians, sin, cos, sqrt, atan2  # For haversine distance
 import streamlit.components.v1 as components  # For custom JS components
+import requests  # Add for postcode API calls
 
 # 1. Load the API key from the .env file
 load_dotenv("env_variables.env")
@@ -37,6 +38,19 @@ def haversine(lat1, lon1, lat2, lon2):
     a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
     c = 2 * atan2(sqrt(a), sqrt(1-a))
     return R * c
+
+# Function to geocode UK postcode using postcodes.io API
+def geocode_postcode(postcode):
+    try:
+        url = f"https://api.postcodes.io/postcodes/{postcode.replace(' ', '')}"
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()['result']
+            return [data['latitude'], data['longitude']]
+        else:
+            return None
+    except Exception:
+        return None
 
 # Function to fetch raw data
 @st.cache_data(ttl=10)  # Cache for 10 seconds to avoid redundant fetches
@@ -89,15 +103,25 @@ num_buses = len(vehicle_activities)
 lines = sorted(set([item['Line'] for item in bus_data if item['Line'] != 'N/A']))
 operators = sorted(set([item['Operator'] for item in bus_data if item['Operator'] != 'N/A']))
 
-# Sidebar filters
+# Sidebar filters and location inputs
 with st.sidebar:
     st.header("Filters")
     selected_lines = st.multiselect("Filter by Line", lines)
     selected_operators = st.multiselect("Filter by Operator", operators)
     
-    # User location button
-    st.header("Use My Location")
-    if st.button("Get My Location"):
+    st.header("Set Your Location")
+    # Postcode input
+    postcode = st.text_input("Enter UK Postcode (e.g., TF1 1AA)")
+    if postcode:
+        postcode_loc = geocode_postcode(postcode)
+        if postcode_loc:
+            st.session_state.user_loc = postcode_loc
+            st.success(f"Location set to postcode {postcode}")
+        else:
+            st.error("Invalid postcode or API error. Try again.")
+    
+    # Browser location button (alternative)
+    if st.button("Or Get My Browser Location"):
         # Custom JS to get geolocation and set it in session state
         components.html("""
             <script>
