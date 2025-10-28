@@ -60,7 +60,7 @@ def load_naptan_stops():
     response = requests.get(url)
     if response.status_code == 200:
         df = pd.read_csv(io.StringIO(response.text))
-        return df.set_index('AtcoCode')
+        return df.set_index('ATCOCode')  # Corrected case: 'ATCOCode' instead of 'AtcoCode'
     else:
         st.error("Failed to load NaPTAN stops data.")
         return pd.DataFrame()
