@@ -99,8 +99,8 @@ st.write("Live bus locations in Telford. Click 'Refresh' to update data.")
 if 'vehicle_activities' not in st.session_state or 'bus_data' not in st.session_state:
     st.session_state.vehicle_activities, st.session_state.bus_data = fetch_data()
 
-# Refresh button
-if st.button("Refresh Data"):
+# Refresh button - made more prominent with type="primary" and use_container_width=True
+if st.button("Refresh Data", type="primary", use_container_width=True):
     st.session_state.vehicle_activities, st.session_state.bus_data = fetch_data()
 
 # Use stored data
