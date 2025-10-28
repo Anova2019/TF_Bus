@@ -50,3 +50,10 @@ def process_activities_to_data(vehicle_activities):
             'Distance (km)': 'N/A'
         })
     return bus_data
+    def get_bus_details_by_ref(bus_data_list, vehicle_ref):
+    """Retrieves the full data dictionary for a selected Vehicle Ref."""
+    for data in bus_data_list:
+        if data['Vehicle Ref'] == vehicle_ref:
+            # Return a copy to ensure we don't accidentally modify session state data
+            return data.copy() 
+    return None
