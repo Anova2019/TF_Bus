@@ -1,16 +1,15 @@
 import os
-import time
-import streamlit as st  # New import for Streamlit
+import streamlit as st
 from dotenv import load_dotenv
 from bods_client.client import BODSClient
 from bods_client.models import BoundingBox, SIRIVMParams, Siri
 import folium
 from folium.plugins import MarkerCluster
-from streamlit_folium import folium_static  # New import to display Folium in Streamlit; pip install streamlit-folium
-import pandas as pd  # Add for DataFrame
-from math import radians, sin, cos, sqrt, atan2  # For haversine distance
-import streamlit.components.v1 as components  # For custom JS components
-import requests  # Add for postcode API calls
+from streamlit_folium import folium_static
+import pandas as pd
+from math import radians, sin, cos, sqrt, atan2
+import streamlit.components.v1 as components
+import requests
 
 # 1. Load the API key from the .env file
 load_dotenv("env_variables.env")
