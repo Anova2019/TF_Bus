@@ -27,9 +27,9 @@ telford_bounding_box = BoundingBox(
 # 3. Set up the BODS Client
 bods_client = BODSClient(api_key=API_KEY)
 
-# Function to fetch data and generate the Folium map
+# Function to fetch raw data
 @st.cache_data(ttl=10)  # Cache for 10 seconds to avoid redundant fetches
-def fetch_and_generate_map():
+def fetch_data():
     try:
         # Parameters to filter the data by the bounding box
         siri_params = SIRIVMParams(bounding_box=telford_bounding_box)
@@ -47,9 +47,9 @@ def fetch_and_generate_map():
             mvj = activity.monitored_vehicle_journey
             bus_data.append({
                 'Vehicle Ref': mvj.vehicle_ref,
-                'Line': mvj.published_line_name or mvj.line_ref,
-                'Direction': mvj.direction_ref,
-                'Operator': mvj.operator_ref,
+                'Line': mvj.published_line_name or mvj.line_ref or 'N/A',
+                'Direction': mvj.direction_ref or 'N/A',
+                'Operator': mvj.operator_ref or 'N/A',
                 'Speed (km/h)': mvj.velocity if hasattr(mvj, 'velocity') else 'N/A',
                 'Bearing': mvj.bearing if hasattr(mvj, 'bearing') else 'N/A',
                 'Next Stop': mvj.monitored_call.stop_point_name if hasattr(mvj, 'monitored_call') else 'N/A',
@@ -58,44 +58,71 @@ def fetch_and_generate_map():
                 'Lon': mvj.vehicle_location.longitude
             })
         
-        # Create the map
-        map_center = [(telford_bounding_box.min_latitude + telford_bounding_box.max_latitude) / 2,
-                      (telford_bounding_box.min_longitude + telford_bounding_box.max_longitude) / 2]
-        bus_map = folium.Map(location=map_center, zoom_start=12)
-        
-        # Add markers for all buses
-        marker_cluster = MarkerCluster().add_to(bus_map)
-        for activity in vehicle_activities:
-            vehicle_ref = activity.monitored_vehicle_journey.vehicle_ref
-            latitude = activity.monitored_vehicle_journey.vehicle_location.latitude
-            longitude = activity.monitored_vehicle_journey.vehicle_location.longitude
-            popup_text = f"Bus Ref: {vehicle_ref}<br>Lat: {latitude}<br>Lon: {longitude}"
-            folium.Marker(
-                location=[latitude, longitude],
-                popup=popup_text,
-                icon=folium.Icon(color="blue", icon="bus", prefix="fa")
-            ).add_to(marker_cluster)
-        
-        return bus_map, len(vehicle_activities), bus_data
+        return vehicle_activities, bus_data
     
     except Exception as e:
         st.error(f"An error occurred while fetching BODS data: {e}")
         st.info("Double check your API key and the bounding box coordinates.")
-        return None, 0, []
+        return [], []
 
 # Streamlit app layout
 st.title("Real-Time Telford Bus Tracker")
 st.write("Live bus locations in Telford, updating every 10 seconds.")
 
-# Fetch and display the map
-bus_map, num_buses, bus_data = fetch_and_generate_map()
-if bus_map:
-    folium_static(bus_map, width=800, height=600)
-    st.success(f"Found {num_buses} live bus reports in the area.")
+# Fetch raw data
+vehicle_activities, bus_data = fetch_data()
+num_buses = len(vehicle_activities)
+
+# Collect unique lines and operators for filters
+lines = sorted(set([item['Line'] for item in bus_data if item['Line'] != 'N/A']))
+operators = sorted(set([item['Operator'] for item in bus_data if item['Operator'] != 'N/A']))
+
+# Sidebar filters
+with st.sidebar:
+    st.header("Filters")
+    selected_lines = st.multiselect("Filter by Line", lines)
+    selected_operators = st.multiselect("Filter by Operator", operators)
+
+# Apply filters
+if selected_lines or selected_operators:
+    filtered_activities = []
+    filtered_bus_data = []
+    for activity, data in zip(vehicle_activities, bus_data):
+        if (not selected_lines or data['Line'] in selected_lines) and \
+           (not selected_operators or data['Operator'] in selected_operators):
+            filtered_activities.append(activity)
+            filtered_bus_data.append(data)
+else:
+    filtered_activities = vehicle_activities
+    filtered_bus_data = bus_data
+
+filtered_num_buses = len(filtered_activities)
+
+# Generate the map with filtered activities
+if filtered_activities:
+    map_center = [(telford_bounding_box.min_latitude + telford_bounding_box.max_latitude) / 2,
+                  (telford_bounding_box.min_longitude + telford_bounding_box.max_longitude) / 2]
+    bus_map = folium.Map(location=map_center, zoom_start=12)
     
-    # Display the filterable data table
+    # Add markers for filtered buses
+    marker_cluster = MarkerCluster().add_to(bus_map)
+    for activity in filtered_activities:
+        vehicle_ref = activity.monitored_vehicle_journey.vehicle_ref
+        latitude = activity.monitored_vehicle_journey.vehicle_location.latitude
+        longitude = activity.monitored_vehicle_journey.vehicle_location.longitude
+        popup_text = f"Bus Ref: {vehicle_ref}<br>Lat: {latitude}<br>Lon: {longitude}"
+        folium.Marker(
+            location=[latitude, longitude],
+            popup=popup_text,
+            icon=folium.Icon(color="blue", icon="bus", prefix="fa")
+        ).add_to(marker_cluster)
+    
+    folium_static(bus_map, width=800, height=600)
+    st.success(f"Found {filtered_num_buses} live bus reports in the area (after filters).")
+    
+    # Display the filterable data table with filtered data
     st.subheader("Bus Details Table")
-    df = pd.DataFrame(bus_data)
+    df = pd.DataFrame(filtered_bus_data)
     st.dataframe(df, use_container_width=True)  # Interactive table with sorting
 
 # Auto-refresh every 10 seconds
