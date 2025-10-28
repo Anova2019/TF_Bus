@@ -79,6 +79,8 @@ def fetch_data():
                 'Bearing': mvj.bearing if hasattr(mvj, 'bearing') else 'N/A',
                 'Next Stop': mvj.monitored_call.stop_point_name if hasattr(mvj, 'monitored_call') else 'N/A',
                 'ETA': mvj.monitored_call.expected_arrival_time if hasattr(mvj, 'monitored_call') else 'N/A',
+                'From': mvj.origin_name if hasattr(mvj, 'origin_name') else 'N/A',
+                'To': mvj.destination_name if hasattr(mvj, 'destination_name') else 'N/A',
                 'Lat': mvj.vehicle_location.latitude,
                 'Lon': mvj.vehicle_location.longitude,
                 'Distance (km)': 'N/A'  # Placeholder, will be updated if user location available
@@ -182,19 +184,31 @@ if filtered_activities:
     # Add markers for filtered buses
     marker_cluster = MarkerCluster().add_to(bus_map)
     for activity, data in zip(filtered_activities, filtered_bus_data):
-        vehicle_ref = activity.monitored_vehicle_journey.vehicle_ref
-        latitude = activity.monitored_vehicle_journey.vehicle_location.latitude
-        longitude = activity.monitored_vehicle_journey.vehicle_location.longitude
-        popup_text = f"Bus Ref: {vehicle_ref}<br>Lat: {latitude}<br>Lon: {longitude}"
+        mvj = activity.monitored_vehicle_journey
+        vehicle_ref = mvj.vehicle_ref
+        latitude = mvj.vehicle_location.latitude
+        longitude = mvj.vehicle_location.longitude
+        popup_text = f"Bus Ref: {vehicle_ref}<br>Line: {data['Line']}<br>From: {data['From']}<br>To: {data['To']}<br>Lat: {latitude}<br>Lon: {longitude}"
         if user_loc:
             popup_text += f"<br>Distance: {data['Distance (km)']} km"
             color = "red" if data['Distance (km)'] < 1 else "blue"  # Highlight nearest in red
         else:
             color = "blue"
+        
+        # Custom DivIcon with bus icon and line number
+        line_number = data['Line'] if data['Line'] != 'N/A' else ''
+        html = f'''
+            <div style="position: relative; text-align: center; width: 40px; height: 40px;">
+                <i class="fa fa-bus" style="font-size: 24px; color: {color};"></i>
+                <span style="position: absolute; top: 24px; left: 50%; transform: translateX(-50%); font-size: 12px; color: black; background-color: white; padding: 2px; border-radius: 3px;">{line_number}</span>
+            </div>
+        '''
+        custom_icon = folium.DivIcon(html=html)
+        
         folium.Marker(
             location=[latitude, longitude],
             popup=popup_text,
-            icon=folium.Icon(color=color, icon="bus", prefix="fa")
+            icon=custom_icon
         ).add_to(marker_cluster)
     
     # Add user location marker if available
