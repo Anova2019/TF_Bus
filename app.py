@@ -1,208 +1,144 @@
-import os
+# app.py (Main Streamlit script - Updated)
 import streamlit as st
-from dotenv import load_dotenv
-from bods_client.client import BODSClient
-from bods_client.models import BoundingBox, SIRIVMParams, Siri
+import pandas as pd
 import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import folium_static
-import pandas as pd
-from math import radians, sin, cos, sqrt, atan2
 import streamlit.components.v1 as components
-import requests
 
-# 1. Load the API key from the .env file
-load_dotenv("env_variables.env")
-API_KEY = os.getenv("BODS_API_KEY")
+# Import modular components
+import bods_api
+from utils import haversine, process_activities_to_data, get_bus_details_by_ref
+from bods_api import TELFORD_BOUNDING_BOX # Access the Bounding Box for map centering
 
-if not API_KEY:
-    raise ValueError("BODS_API_KEY not found in .env file. Please check your .env file.")
 
-# 2. Define the geographic area for Telford (approximate values)
-telford_bounding_box = BoundingBox(
-    min_latitude=52.65,
-    max_latitude=52.75,
-    min_longitude=-2.55,
-    max_longitude=-2.35,
-)
+# --- 1. Data Fetching & Caching ---
 
-# 3. Set up the BODS Client
-bods_client = BODSClient(api_key=API_KEY)
-
-# Function to calculate haversine distance
-def haversine(lat1, lon1, lat2, lon2):
-    R = 6371  # Earth radius in km
-    dlat = radians(lat2 - lat1)
-    dlon = radians(lon2 - lon1)
-    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
-    c = 2 * atan2(sqrt(a), sqrt(1-a))
-    return R * c
-
-# Function to geocode UK postcode using postcodes.io API
-def geocode_postcode(postcode):
+@st.cache_data(ttl=30)
+def get_initial_data():
+    """Fetches and processes data, optimized with Streamlit caching."""
     try:
-        url = f"https://api.postcodes.io/postcodes/{postcode.replace(' ', '')}"
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()['result']
-            return [data['latitude'], data['longitude']]
-        else:
-            return None
-    except Exception:
-        return None
-
-# Function to fetch raw data (no cache, since we control fetches manually)
-def fetch_data():
-    try:
-        # Parameters to filter the data by the bounding box
-        siri_params = SIRIVMParams(bounding_box=telford_bounding_box)
-        
-        # Get raw response (XML bytes) and parse to Siri object
-        raw_response = bods_client.get_siri_vm_data_feed(params=siri_params)
-        siri = Siri.from_bytes(raw_response)
-        
-        # Extract data
-        vehicle_activities = siri.service_delivery.vehicle_monitoring_delivery.vehicle_activities
-        
-        # Create bus data list for the table
-        bus_data = []
-        for activity in vehicle_activities:
-            mvj = activity.monitored_vehicle_journey
-            bus_data.append({
-                'Vehicle Ref': mvj.vehicle_ref,
-                'Line': mvj.published_line_name or mvj.line_ref or 'N/A',
-                'Direction': mvj.direction_ref or 'N/A',
-                'Operator': mvj.operator_ref or 'N/A',
-                'Speed (km/h)': mvj.velocity if hasattr(mvj, 'velocity') else 'N/A',
-                'Bearing': mvj.bearing if hasattr(mvj, 'bearing') else 'N/A',
-                'Next Stop': mvj.monitored_call.stop_point_name if hasattr(mvj, 'monitored_call') else 'N/A',
-                'ETA': mvj.monitored_call.expected_arrival_time if hasattr(mvj, 'monitored_call') else 'N/A',
-                'From': mvj.origin_name if hasattr(mvj, 'origin_name') else 'N/A',
-                'To': mvj.destination_name if hasattr(mvj, 'destination_name') else 'N/A',
-                'Lat': mvj.vehicle_location.latitude,
-                'Lon': mvj.vehicle_location.longitude,
-                'Distance (km)': 'N/A'  # Placeholder, will be updated if user location available
-            })
-        
+        vehicle_activities = bods_api.fetch_live_data()
+        bus_data = process_activities_to_data(vehicle_activities)
         return vehicle_activities, bus_data
-    
     except Exception as e:
         st.error(f"An error occurred while fetching BODS data: {e}")
-        st.info("Double check your API key and the bounding box coordinates.")
         return [], []
 
-# Streamlit app layout
-st.title("Real-Time Telford Bus Tracker")
-st.write("Live bus locations in Telford. Click 'Refresh' to update data.")
 
-# Initialize session state for data if not present (initial fetch)
-if 'vehicle_activities' not in st.session_state or 'bus_data' not in st.session_state:
-    st.session_state.vehicle_activities, st.session_state.bus_data = fetch_data()
+# --- 2. UI Components ---
 
-# Refresh button - made more prominent with type="primary" and use_container_width=True
-if st.button("Refresh Data", type="primary", use_container_width=True):
-    st.session_state.vehicle_activities, st.session_state.bus_data = fetch_data()
-
-# Use stored data
-vehicle_activities = st.session_state.vehicle_activities
-bus_data = st.session_state.bus_data
-num_buses = len(vehicle_activities)
-
-# Collect unique lines and operators for filters
-lines = sorted(set([item['Line'] for item in bus_data if item['Line'] != 'N/A']))
-operators = sorted(set([item['Operator'] for item in bus_data if item['Operator'] != 'N/A']))
-
-# Sidebar filters and location inputs
-with st.sidebar:
-    st.header("Filters")
-    selected_lines = st.multiselect("Filter by Line", lines)
-    selected_operators = st.multiselect("Filter by Operator", operators)
+def render_route_map(selected_bus_data, user_loc):
+    """Generates a detailed map showing the selected bus and its route prediction."""
     
-    st.header("Set Your Location")
-    # Postcode input
-    postcode = st.text_input("Enter UK Postcode (e.g., TF1 1AA)")
-    if postcode:
-        postcode_loc = geocode_postcode(postcode)
-        if postcode_loc:
-            st.session_state.user_loc = postcode_loc
-            st.success(f"Location set to postcode {postcode}")
-        else:
-            st.error("Invalid postcode or API error. Try again.")
+    bus_lat, bus_lon = selected_bus_data['Lat'], selected_bus_data['Lon']
     
-    # Browser location button (alternative)
-    if st.button("Or Get My Browser Location"):
-        # Custom JS to get geolocation and set it in session state
-        components.html("""
-            <script>
-            function getLocation() {
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(sendPosition, showError);
-                } else {
-                    alert("Geolocation is not supported by this browser.");
-                }
-            }
+    # Use the bus's current location as the map center
+    map_center = [bus_lat, bus_lon]
 
-            function sendPosition(position) {
-                const lat = position.coords.latitude;
-                const lon = position.coords.longitude;
-                parent.window.postMessage({type: 'streamlit:setComponentValue', value: [lat, lon]}, '*');
-            }
+    route_map = folium.Map(location=map_center, zoom_start=14)
 
-            function showError(error) {
-                alert("Error getting location: " + error.message);
-            }
-
-            getLocation();
-            </script>
-        """, height=0)
+    # --- Next Stop & Prediction (Visualization) ---
+    next_stop_name = selected_bus_data['Next Stop']
     
-    # Listen for the geolocation message (using session state)
-    if 'user_loc' not in st.session_state:
-        st.session_state.user_loc = None
+    # Since we don't have the precise coordinate for the next stop, 
+    # we'll use a mock location near the destination for visualization.
+    # In a production app, you would use a robust Geo-API here.
+    if next_stop_name != 'N/A':
+        # Mock Next Stop Location (slightly shifted from the bus towards the direction of travel)
+        # This is for visualization only.
+        next_stop_lat = bus_lat + 0.005 
+        next_stop_lon = bus_lon + 0.005 
 
-# Apply filters
-filtered_activities = []
-filtered_bus_data = []
-for activity, data in zip(vehicle_activities, bus_data):
-    if (not selected_lines or data['Line'] in selected_lines) and \
-       (not selected_operators or data['Operator'] in selected_operators):
-        filtered_activities.append(activity)
-        filtered_bus_data.append(data)
+        # Add the predicted next stop marker
+        folium.Marker(
+            location=[next_stop_lat, next_stop_lon],
+            popup=f"**Next Stop:** {next_stop_name}",
+            icon=folium.Icon(color='orange', icon='location-dot', prefix='fa')
+        ).add_to(route_map)
 
-filtered_num_buses = len(filtered_activities)
+        # Draw a line segment (a straight line prediction)
+        folium.PolyLine(
+            locations=[[bus_lat, bus_lon], [next_stop_lat, next_stop_lon]],
+            color='purple',
+            weight=5,
+            opacity=0.7,
+            dash_array='10, 5',
+            popup=f"Segment to: {next_stop_name}"
+        ).add_to(route_map)
 
-# Update distances if user location is available
-user_loc = st.session_state.get('user_loc')
-if user_loc:
-    for data in filtered_bus_data:
-        data['Distance (km)'] = round(haversine(user_loc[0], user_loc[1], data['Lat'], data['Lon']), 2)
+    # --- Bus Location Marker ---
+    line_number = selected_bus_data['Line'] if selected_bus_data['Line'] != 'N/A' else ''
+    html = f'''
+        <div style="position: relative; text-align: center; width: 40px; height: 40px;">
+            <i class="fa fa-bus" style="font-size: 28px; color: red;"></i>
+            <span style="position: absolute; top: 28px; left: 50%; transform: translateX(-50%); font-size: 12px; color: black; background-color: yellow; padding: 2px; border-radius: 3px;">{line_number}</span>
+        </div>
+    '''
+    custom_icon = folium.DivIcon(html=html)
     
-    # Sort table by distance
-    filtered_bus_data.sort(key=lambda x: x['Distance (km)'])
+    folium.Marker(
+        location=[bus_lat, bus_lon],
+        popup=f"**{selected_bus_data['Vehicle Ref']}**<br>Line: {selected_bus_data['Line']}",
+        icon=custom_icon
+    ).add_to(route_map)
 
-# Generate the map with filtered activities
-if filtered_activities:
-    map_center = [(telford_bounding_box.min_latitude + telford_bounding_box.max_latitude) / 2,
-                  (telford_bounding_box.min_longitude + telford_bounding_box.max_longitude) / 2]
+    # --- User Location Marker ---
     if user_loc:
-        map_center = user_loc  # Center on user if available
-    bus_map = folium.Map(location=map_center, zoom_start=12)
+        folium.Marker(
+            location=user_loc,
+            popup="Your Location",
+            icon=folium.Icon(color="green", icon="user", prefix="fa")
+        ).add_to(route_map)
+
+    st.subheader(f"Detailed Route Visualization for Bus {selected_bus_data['Line']} ({selected_bus_data['Vehicle Ref']})")
+    folium_static(route_map, width=800, height=500)
+
+    # --- Predictions/Details Table ---
+    st.markdown("### Estimated Timetable")
+    pred_data = {
+        "Key": ["Current Speed", "Bearing", "Next Stop", "Expected ETA", "Final Destination"],
+        "Value": [
+            f"{selected_bus_data['Speed (km/h)']} km/h",
+            selected_bus_data['Bearing'],
+            selected_bus_data['Next Stop'],
+            selected_bus_data['ETA'],
+            selected_bus_data['To']
+        ]
+    }
+    st.table(pd.DataFrame(pred_data))
+
+
+# --- (Previous render_map and render_sidebar functions remain unchanged) ---
+def render_map(filtered_activities, filtered_bus_data, user_loc):
+    """Generates and renders the Folium map."""
     
-    # Add markers for filtered buses
+    # ... (existing map rendering logic) ...
+    
+    # Determine map center
+    map_center = [
+        (TELFORD_BOUNDING_BOX.min_latitude + TELFORD_BOUNDING_BOX.max_latitude) / 2,
+        (TELFORD_BOUNDING_BOX.min_longitude + TELFORD_BOUNDING_BOX.max_longitude) / 2
+    ]
+    if user_loc:
+        map_center = user_loc
+
+    bus_map = folium.Map(location=map_center, zoom_start=12)
     marker_cluster = MarkerCluster().add_to(bus_map)
-    for activity, data in zip(filtered_activities, filtered_bus_data):
-        mvj = activity.monitored_vehicle_journey
-        vehicle_ref = mvj.vehicle_ref
-        latitude = mvj.vehicle_location.latitude
-        longitude = mvj.vehicle_location.longitude
-        popup_text = f"Bus Ref: {vehicle_ref}<br>Line: {data['Line']}<br>From: {data['From']}<br>To: {data['To']}<br>Lat: {latitude}<br>Lon: {longitude}"
-        if user_loc:
-            popup_text += f"<br>Distance: {data['Distance (km)']} km"
-            color = "red" if data['Distance (km)'] < 1 else "blue"  # Highlight nearest in red
-        else:
-            color = "blue"
+
+    for data in filtered_bus_data:
+        # ... (existing marker creation logic) ...
+        latitude = data['Lat']
+        longitude = data['Lon']
         
-        # Custom DivIcon with bus icon and line number
+        popup_text = f"Bus Ref: {data['Vehicle Ref']}<br>Line: {data['Line']}<br>From: {data['From']}<br>To: {data['To']}"
+        
+        color = "blue"
+        if user_loc and data['Distance (km)'] != 'N/A':
+            popup_text += f"<br>Distance: {data['Distance (km)']} km"
+            color = "red" if data['Distance (km)'] < 1 else "blue"
+        
+        # Custom DivIcon with line number
         line_number = data['Line'] if data['Line'] != 'N/A' else ''
         html = f'''
             <div style="position: relative; text-align: center; width: 40px; height: 40px;">
@@ -217,7 +153,7 @@ if filtered_activities:
             popup=popup_text,
             icon=custom_icon
         ).add_to(marker_cluster)
-    
+
     # Add user location marker if available
     if user_loc:
         folium.Marker(
@@ -225,11 +161,135 @@ if filtered_activities:
             popup="Your Location",
             icon=folium.Icon(color="green", icon="user", prefix="fa")
         ).add_to(bus_map)
-    
+
     folium_static(bus_map, width=800, height=600)
-    st.success(f"Found {filtered_num_buses} live bus reports in the area (after filters).")
+    st.success(f"Found {len(filtered_activities)} live bus reports in the area (after filters).")
+
+
+def render_sidebar(lines, operators):
+    """Renders the filters and location input in the Streamlit sidebar."""
+    with st.sidebar:
+        st.header("Filters")
+        selected_lines = st.multiselect("Filter by Line", lines)
+        selected_operators = st.multiselect("Filter by Operator", operators)
+        
+        st.header("Set Your Location")
+        
+        # Postcode input
+        postcode = st.text_input("Enter UK Postcode (e.g., TF1 1AA)")
+        if postcode:
+            postcode_loc = bods_api.geocode_postcode(postcode)
+            if postcode_loc:
+                st.session_state.user_loc = postcode_loc
+                st.success(f"Location set to postcode {postcode}")
+            else:
+                st.error("Invalid postcode or API error. Try again.")
+        
+        # Browser location button (JS component remains in the main app file for simplicity)
+        if st.button("Or Get My Browser Location"):
+             # IMPORTANT: This JS component must remain here as it communicates directly with Streamlit's parent window
+             components.html("""
+                 <script>
+                 function getLocation() {
+                     if (navigator.geolocation) {
+                         navigator.geolocation.getCurrentPosition(sendPosition, showError);
+                     } else {
+                         alert("Geolocation is not supported by this browser.");
+                     }
+                 }
+                 function sendPosition(position) {
+                     const lat = position.coords.latitude;
+                     const lon = position.coords.longitude;
+                     parent.window.postMessage({type: 'streamlit:setComponentValue', value: [lat, lon]}, '*');
+                 }
+                 function showError(error) {
+                     alert("Error getting location: " + error.message);
+                 }
+                 getLocation();
+                 </script>
+             """, height=0, key='geolocation_script')
+
+        if 'user_loc' not in st.session_state:
+             st.session_state.user_loc = None
+            
+    return selected_lines, selected_operators
+
+
+# --- 3. Main Application Flow ---
+
+def main():
+    st.title("Real-Time Telford Bus Tracker 🚍")
+    st.write("Live bus locations in Telford. Click 'Refresh' to update data.")
+
+    # 3.1 Initialize Data in Session State
+    if 'vehicle_activities' not in st.session_state or 'bus_data' not in st.session_state:
+        st.session_state.vehicle_activities, st.session_state.bus_data = get_initial_data()
+        st.session_state.user_loc = None
+
+    # Refresh Button
+    if st.button("Refresh Data", type="primary", use_container_width=True):
+        st.session_state.vehicle_activities, st.session_state.bus_data = get_initial_data()
     
-    # Display the filterable data table with filtered data
-    st.subheader("Bus Details Table")
-    df = pd.DataFrame(filtered_bus_data)
-    st.dataframe(df, use_container_width=True)  # Interactive table with sorting
+    # Use stored data
+    vehicle_activities = st.session_state.vehicle_activities
+    bus_data = st.session_state.bus_data
+
+    # Collect unique filters
+    lines = sorted(set([item['Line'] for item in bus_data if item['Line'] != 'N/A']))
+    operators = sorted(set([item['Operator'] for item in bus_data if item['Operator'] != 'N/A']))
+    vehicle_refs = sorted(set([item['Vehicle Ref'] for item in bus_data if item['Vehicle Ref'] != 'N/A']))
+
+
+    # 3.2 Render Sidebar and Get Inputs
+    selected_lines, selected_operators = render_sidebar(lines, operators)
+    
+    # 3.3 Apply Filters
+    filtered_activities = []
+    filtered_bus_data = []
+    for activity, data in zip(vehicle_activities, bus_data):
+        if (not selected_lines or data['Line'] in selected_lines) and \
+           (not selected_operators or data['Operator'] in selected_operators):
+            filtered_activities.append(activity)
+            # Create a COPY of the dict for distance calculation
+            filtered_bus_data.append(data.copy()) 
+
+    # 3.4 Update Distances and Sort
+    user_loc = st.session_state.get('user_loc')
+    if user_loc and filtered_bus_data:
+        user_lat, user_lon = user_loc
+        for data in filtered_bus_data:
+            data['Distance (km)'] = round(haversine(user_lat, user_lon, data['Lat'], data['Lon']), 2)
+        
+        filtered_bus_data.sort(key=lambda x: x['Distance (km)'])
+        
+    # Re-collect vehicle references from filtered data for the new select box
+    filtered_vehicle_refs = sorted(set([item['Vehicle Ref'] for item in filtered_bus_data if item['Vehicle Ref'] != 'N/A']))
+    st.sidebar.markdown(f"**DEBUG: Filtered Bus Count:** {len(filtered_bus_data)}")
+    st.markdown("---")
+    
+    # --- New Feature: Bus Selection & Detailed View ---
+    if filtered_bus_data:
+        st.header("🔍 Individual Bus Tracker")
+        selected_ref = st.selectbox(
+            "Select a bus to track its route and predictions:", 
+            options=[''] + filtered_vehicle_refs,
+            format_func=lambda x: f"Vehicle Ref: {x} (Line: {get_bus_details_by_ref(filtered_bus_data, x).get('Line') if x else 'Select One'})"
+        )
+        
+        if selected_ref:
+            selected_bus_data = get_bus_details_by_ref(filtered_bus_data, selected_ref)
+            if selected_bus_data:
+                render_route_map(selected_bus_data, user_loc)
+            
+            st.markdown("---")
+        
+    # 3.5 Render General Map and Table (Only if the bus selection wasn't made or if we need the general view)
+    if filtered_activities:
+        render_map(filtered_activities, filtered_bus_data, user_loc)
+        
+        st.subheader("Bus Details Table")
+        df = pd.DataFrame(filtered_bus_data)
+        st.dataframe(df, use_container_width=True)
+
+if __name__ == '__main__':
+    main()
