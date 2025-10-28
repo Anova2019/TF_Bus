@@ -10,8 +10,7 @@ from streamlit_folium import folium_static  # New import to display Folium in St
 import pandas as pd  # Add for DataFrame
 from math import radians, sin, cos, sqrt, atan2  # For haversine distance
 import streamlit.components.v1 as components  # For custom JS components
-import requests  # Add for postcode API calls and NaPTAN
-import io  # For reading CSV from string
+import requests  # Add for postcode API calls
 
 # 1. Load the API key from the .env file
 load_dotenv("env_variables.env")
@@ -52,28 +51,6 @@ def geocode_postcode(postcode):
             return None
     except Exception:
         return None
-
-# Load NaPTAN stops data (cached)
-@st.cache_resource
-def load_naptan_stops():
-    url = "https://naptan.api.dft.gov.uk/v1/access-nodes?dataFormat=csv"
-    response = requests.get(url)
-    if response.status_code == 200:
-        df = pd.read_csv(io.StringIO(response.text))
-        return df.set_index('ATCOCode')  # Corrected case: 'ATCOCode' instead of 'AtcoCode'
-    else:
-        st.error("Failed to load NaPTAN stops data.")
-        return pd.DataFrame()
-
-stops_df = load_naptan_stops()
-
-# Function to get stop location by NaPTAN reference
-def get_stop_location(ref):
-    try:
-        row = stops_df.loc[ref]
-        return row['Latitude'], row['Longitude']
-    except KeyError:
-        return None, None
 
 # Function to fetch raw data
 @st.cache_data(ttl=10)  # Cache for 10 seconds to avoid redundant fetches
@@ -205,34 +182,20 @@ if filtered_activities:
     # Add markers for filtered buses
     marker_cluster = MarkerCluster().add_to(bus_map)
     for activity, data in zip(filtered_activities, filtered_bus_data):
-        mvj = activity.monitored_vehicle_journey
-        vehicle_ref = mvj.vehicle_ref
-        latitude = mvj.vehicle_location.latitude
-        longitude = mvj.vehicle_location.longitude
+        vehicle_ref = activity.monitored_vehicle_journey.vehicle_ref
+        latitude = activity.monitored_vehicle_journey.vehicle_location.latitude
+        longitude = activity.monitored_vehicle_journey.vehicle_location.longitude
         popup_text = f"Bus Ref: {vehicle_ref}<br>Lat: {latitude}<br>Lon: {longitude}"
         if user_loc:
             popup_text += f"<br>Distance: {data['Distance (km)']} km"
-        if hasattr(mvj, 'origin_name'):
-            popup_text += f"<br>From: {mvj.origin_name}"
-        if hasattr(mvj, 'destination_name'):
-            popup_text += f"<br>Heading to: {mvj.destination_name}"
-        color = "red" if user_loc and data['Distance (km)'] < 1 else "blue"  # Highlight nearest in red
-        
-        # Add marker
+            color = "red" if data['Distance (km)'] < 1 else "blue"  # Highlight nearest in red
+        else:
+            color = "blue"
         folium.Marker(
             location=[latitude, longitude],
             popup=popup_text,
             icon=folium.Icon(color=color, icon="bus", prefix="fa")
         ).add_to(marker_cluster)
-        
-        # Add route visualization (straight line to destination if available)
-        if hasattr(mvj, 'destination_ref') and mvj.destination_ref:
-            dest_lat, dest_lon = get_stop_location(mvj.destination_ref)
-            if dest_lat is not None and dest_lon is not None:
-                folium.PolyLine(
-                    locations=[[latitude, longitude], [dest_lat, dest_lon]],
-                    color="red", weight=2, opacity=0.7
-                ).add_to(bus_map)
     
     # Add user location marker if available
     if user_loc:
