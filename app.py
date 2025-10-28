@@ -264,7 +264,7 @@ def main():
         
     # Re-collect vehicle references from filtered data for the new select box
     filtered_vehicle_refs = sorted(set([item['Vehicle Ref'] for item in filtered_bus_data if item['Vehicle Ref'] != 'N/A']))
-    
+    st.sidebar.markdown(f"**DEBUG: Filtered Bus Count:** {len(filtered_bus_data)}")
     st.markdown("---")
     
     # --- New Feature: Bus Selection & Detailed View ---
