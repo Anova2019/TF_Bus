@@ -52,8 +52,7 @@ def geocode_postcode(postcode):
     except Exception:
         return None
 
-# Function to fetch raw data
-@st.cache_data(ttl=10)  # Cache for 10 seconds to avoid redundant fetches
+# Function to fetch raw data (no cache, since we control fetches manually)
 def fetch_data():
     try:
         # Parameters to filter the data by the bounding box
@@ -95,10 +94,19 @@ def fetch_data():
 
 # Streamlit app layout
 st.title("Real-Time Telford Bus Tracker")
-st.write("Live bus locations in Telford, updating every 10 seconds.")
+st.write("Live bus locations in Telford. Click 'Refresh' to update data.")
 
-# Fetch raw data
-vehicle_activities, bus_data = fetch_data()
+# Initialize session state for data if not present (initial fetch)
+if 'vehicle_activities' not in st.session_state or 'bus_data' not in st.session_state:
+    st.session_state.vehicle_activities, st.session_state.bus_data = fetch_data()
+
+# Refresh button
+if st.button("Refresh Data"):
+    st.session_state.vehicle_activities, st.session_state.bus_data = fetch_data()
+
+# Use stored data
+vehicle_activities = st.session_state.vehicle_activities
+bus_data = st.session_state.bus_data
 num_buses = len(vehicle_activities)
 
 # Collect unique lines and operators for filters
@@ -226,7 +234,3 @@ if filtered_activities:
     st.subheader("Bus Details Table")
     df = pd.DataFrame(filtered_bus_data)
     st.dataframe(df, use_container_width=True)  # Interactive table with sorting
-
-# Auto-refresh every 10 seconds
-time.sleep(10)
-st.rerun()
