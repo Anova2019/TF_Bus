@@ -30,7 +30,10 @@ def get_initial_data():
 
 def render_route_map(selected_bus_data, user_loc):
     """Generates a detailed map showing the selected bus and its route prediction."""
-    
+    # TEMPORARY DEBUG PRINT: Check the data being used
+    st.sidebar.write("--- SELECTED BUS DATA ---")
+    st.sidebar.json(selected_bus_data) # This will show the full dictionary data
+    st.sidebar.write("-------------------------")
     bus_lat, bus_lon = selected_bus_data['Lat'], selected_bus_data['Lon']
     
     # Use the bus's current location as the map center
